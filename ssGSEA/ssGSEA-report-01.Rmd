@@ -1,0 +1,109 @@
+---
+title: "calc ssGSEA"
+author: "jmzeng1314@163.com"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(warning = F)
+knitr::opts_chunk$set(message  = F) 
+```
+
+# Arrangement of rpkm matrix
+
+```{r}
+###Matrix Information Extraction
+a <- read.table('GSE112996_merged_fpkm_table.txt.gz',
+                header = T,
+                row.names=1)
+raw_data<- a[,-1]
+###Phenotype Information Extraction
+pheno <- read.csv(file = 'GSE112996_series_matrix.txt')
+pheno <- data.frame(num1 = strsplit(as.character(pheno[42,]),split='\t')[[1]][-1],
+                    num2 = gsub('patient: No.','P',strsplit(as.character(pheno[51,]),split='\t')[[1]][-1]))
+table(pheno$num2)
+####data filtering
+data<- a[!apply(raw_data,1,sum)==0,] 
+####Remove rows with duplicate gene names, normalize
+uni_matrix<- data[!duplicated(data$GeneName),]
+rownames(uni_matrix) <- uni_matrix[,1]
+uni_matrix <- uni_matrix[,-1]
+uni_matrix <- log2(uni_matrix+1)
+colnames(uni_matrix)<- gsub('X','',gsub('\\.','\\-',colnames(uni_matrix)))
+uni_matrix<- uni_matrix[,order(colnames(uni_matrix))]
+uni_matrix[1:4,1:4]
+```
+
+The resulting uni_matrix is our expression matrix, which is a data frame in R.
+
+# Organize 28 immune-related gene sets
+
+Extract the immune-related gene set from the pdf or Excel table, and read it into R to become a list object, as follows;
+
+```{r}
+library(GSVA)
+library(Biobase)
+load('gene_set.Rdata')
+str(list)
+```
+
+# Run gsva on expression matrices and gene sets
+```{r}
+gsva_matrix<- gsva(as.matrix(uni_matrix), list,method='ssgsea',kcdf='Gaussian',abs.ranking=TRUE, verbose=F)
+# DT::datatable(gsva_matrix)
+```
+
+There are two parameters to note here, the first is the method can be selected：
+- gsva (Hänzelmann et al, 2013) 
+- ssgsea (Barbie et al, 2009)
+- zscore (Lee et al, 2008)
+- plage (Tomfohr et al, 2005)
+
+Then kcdf can choose
+
+
+# Heatmap to visualize gsva results
+
+```{r}
+library(pheatmap)
+gsva_matrix1<- t(scale(t(gsva_matrix)))
+gsva_matrix1[gsva_matrix1< -2] <- -2
+gsva_matrix1[gsva_matrix1>2] <- 2
+normalization<-function(x){
+  return((x-min(x))/(max(x)-min(x)))}
+nor_gsva_matrix1 <- normalization(gsva_matrix1)
+annotation_col = data.frame(patient=pheno$num2)
+rownames(annotation_col)<-colnames(uni_matrix)
+bk = unique(c(seq(0,1, length=100))) 
+pheatmap(nor_gsva_matrix1,show_colnames = F,
+         cluster_rows = F,cluster_cols = F,annotation_col = annotation_col,
+         breaks=bk)#cellwidth=5,cellheight=5,fontsize=5 
+```
+
+# Divide the immune gene set into two categories to see the correlation
+
+```{r}
+anti_tumor <- c('Activated CD4 T cell', 'Activated CD8 T cell', 'Central memory CD4 T cell	', 'Central memory CD8 T cell', 'Effector memeory CD4 T cell', ' Effector memeory CD8 T cell', 'Type 1 T helper cell', 'Type 17 T helper cell', 'Activated dendritic cell', 'CD56bright natural killer cell', 'Natural killer cell', 'Natural killer T cell')
+pro_tumor <- c('Regulatory T cell', 'Type 2 T helper cell', 'CD56dim natural killer cell', 'Immature dendritic cell', 'Macrophage', 'MDSC', 'Neutrophil', 'Plasmacytoid dendritic cell')
+load('score.Rdata')
+anti<- as.data.frame(gsva_matrix1[gsub('^ ','',rownames(gsva_matrix1))%in%anti_tumor,])
+pro<- as.data.frame(gsva_matrix1[gsub('^ ','',rownames(gsva_matrix1))%in%pro_tumor,])
+anti_n<- apply(anti,2,sum)
+pro_n<- apply(pro,2,sum)
+patient <- pheno$num2[match(colnames(gsva_matrix1),pheno$num1)]
+library(ggplot2)
+data <- data.frame(anti=anti_n,pro=pro_n,patient=patient)
+anti_pro<- cor.test(anti_n,pro_n,method='pearson')
+gg<- ggplot(data,aes(x = anti, y = pro),color=patient) + 
+  xlim(-15,12)+ylim(-15,10)+
+  labs(x="Anti-tumor immunity", y="Pro-tumor suppression") +
+  geom_point(aes(color=patient),size=3)+geom_smooth(method='lm')+
+  annotate("text", x = -5, y =7.5,label=paste0('R=',round(anti_pro$estimate,4),'\n','p<0.001'))
+print(gg)
+# ggsave(gg,filename = 'cor.png')
+```
+
+
+
